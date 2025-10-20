@@ -1,0 +1,11 @@
+*.pickle
+*.csv
+*.txt
+*.pkl
+*.npy
+*.pt
+*.png
+*.json
+logs/
+plots/
+tmp/
