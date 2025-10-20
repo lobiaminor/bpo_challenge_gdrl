@@ -14,8 +14,8 @@ import torch.nn.functional as F
 
 from bpo_env_graph import BPOEnv
 
-# possible problems are: fines, bpi2017, bpi2018
-problem = 'microsoft'
+# possible problems are: bpi2012, bpi2017, consulta, production, microsoft
+problems = ['bpi2012', 'bpi2017', 'consulta', 'production', 'microsoft']
 problem_type = 'regenerated'  # 'original' for the original problem, 'regenerated' for the regenerated problem (only for bpi2017)
 running_time = 7 * 24
 num_cpu = 1
@@ -162,7 +162,7 @@ def add_self_loops_to_assignment_nodes(data):
     return data
 
 
-def batch_to_vectors(batch):
+def batch_to_vectors(batch, allow_postpone=True):
     processed = []
     masks = []
 
@@ -194,8 +194,12 @@ def batch_to_vectors(batch):
         ])
         processed.append(features)
 
+        temp_mask = el['mask']
+        if allow_postpone:
+            temp_mask = torch.cat([temp_mask, torch.tensor([True], dtype=torch.bool)])
+
         # Create mask for valid actions
-        masks.append(el['mask'])
+        masks.append(temp_mask)
 
     # Create Tianshou batch
     return ts.data.Batch(
@@ -223,10 +227,12 @@ class VectorObservationNet(nn.Module):
         return self.network(x.obs), x.mask
 
 class VectorActorNet(nn.Module):
-    def __init__(self, num_resources, num_activities, num_edges):
+    def __init__(self, num_resources, num_activities, num_edges, allow_postpone=True):
         super().__init__()
         self.base = VectorObservationNet(num_resources, num_activities)
         self.num_edges = num_edges #+ 1  # +1 for no-op action
+        if allow_postpone:
+            self.num_edges += 1
         self.policy_head = nn.Linear(64, self.num_edges)
 
     def forward(self, x, state=None, info={}):
@@ -254,112 +260,114 @@ class VectorCriticNet(nn.Module):
 
 if __name__ == '__main__':
     # if true, load model for a new round of training
-
-    if problem == 'toloka':
-        n_edges = 132
-    elif problem == 'bpi2017':
-        n_edges = 573
-        n_activities = 7
-        n_resources = 145
-    elif problem == 'bpi2012':
-        n_edges = 199
-    elif problem == 'bpi2018':
-        n_edges = 479  # full dataset: 479, with threshold==3000: 181
-    elif problem == 'consulta':
-        n_edges = 435
-    elif problem == 'production':
-        n_edges = 76
-    elif problem == 'microsoft':
-        n_edges = 55
-        n_activities = 13
-        n_resources = 8
-    else:
-        raise Exception("Invalid problem name")
-
-
-
-    # Create log dir
-    log_dir = f"./tmp/{problem}"
-    os.makedirs(log_dir, exist_ok=True)
-
-    # Initialize networks and policy
-    actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges) #+ 1)
-    critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities)
-
-    optim = torch.optim.Adam(
-        list(actor_net.parameters()) + list(critic_net.parameters()),
-        lr=train_args["lr"]
-    )
-
-    policy = PPOPolicy(
-        actor_net, critic_net, optim,
-        discount_factor=train_args["discount_factor"],
-        dist_fn=torch.distributions.categorical.Categorical,
-        deterministic_eval=True,
-        reward_normalization=False
-    )
-
-    scheduler = ExponentialLR(optim, 0.95)
-
-    policy = PPOPolicy(actor_net, critic_net, optim,
-                       discount_factor=train_args["discount_factor"],
-                       dist_fn=torch.distributions.categorical.Categorical,
-                       deterministic_eval=True,
-                       #lr_scheduler=scheduler,
-                       reward_normalization=False
-                       )
-    policy.action_type = "discrete"
-    log_path = os.path.join(f"logs/ppo_vector/{problem}")
-
-    #create folder if necessary
-    if not os.path.exists(log_path):
-        os.makedirs(log_path)
-    writer = SummaryWriter(log_path)
-    logger = TensorboardLogger(writer)
-
-    train_envs = ts.env.DummyVectorEnv(
-        [lambda: get_env(problem, running_time, problem_type) for _ in range(train_args["nr_envs"])]
-    )
-
-    collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(train_args['buffer_size'], train_args["nr_envs"]),
-                                  exploration_noise=False, preprocess_fn=preprocess_function)
-    collector.reset()
-
-    test_envs = ts.env.DummyVectorEnv(
-        [lambda: get_env(problem, running_time, problem_type) for _ in range(train_args["nr_envs"])]
-    )
-
-    test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False, preprocess_fn=preprocess_function)
-    test_collector.reset()
-
-    if load_model:
-        policy.load_state_dict(torch.load(f"ppo_graph_{problem}.pt"))
+    for problem in problems:
+        if problem == 'bpi2017':
+            n_edges = 573
+            n_activities = 7
+            n_resources = 145
+        elif problem == 'bpi2012':
+            n_edges = 199
+            n_activities = 6
+            n_resources = 52
+        elif problem == 'consulta':
+            n_edges = 435
+            n_activities = 16
+            n_resources = 179
+        elif problem == 'production':
+            n_edges = 76
+            n_activities = 13
+            n_resources = 33
+        elif problem == 'microsoft':
+            n_edges = 55
+            n_activities = 13
+            n_resources = 8
+        else:
+            raise Exception("Invalid problem name")
 
 
-    print("Starting training")
-    policy.train()
-    if problem == 'bpi2017':
-        trainer = ts.trainer.OnpolicyTrainer(
-            policy, collector, test_collector=test_collector,
-            max_epoch=train_args["max_epoch"],
-            step_per_epoch=train_args["step_per_epoch"],
-            #step_per_collect=train_args["step_per_collect"],
-            episode_per_collect=train_args["episode_per_collect"],
-            episode_per_test=20, batch_size=train_args["batch_size"],
-            repeat_per_collect=train_args["repeat_per_collect"],
-            logger=logger, test_in_train=True, verbose=False,
-            save_best_fn=save_best_fn)
-    else:
-        trainer = ts.trainer.OnpolicyTrainer(
-            policy, collector, test_collector=test_collector,
-            max_epoch=train_args["max_epoch"],
-            step_per_epoch=train_args["step_per_epoch"],
-            step_per_collect=train_args["step_per_collect"],
-            #episode_per_collect=train_args["episode_per_collect"],
-            episode_per_test=100, batch_size=train_args["batch_size"],
-            repeat_per_collect=train_args["repeat_per_collect"],
-            logger=logger, test_in_train=True, verbose=False,
-            save_best_fn=save_best_fn)
 
-    result = trainer.run()
-    print(f'Finished training!')
+        # Create log dir
+        log_dir = f"./tmp/{problem}"
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Initialize networks and policy
+        actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges) #+ 1)
+        critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities)
+
+        optim = torch.optim.Adam(
+            list(actor_net.parameters()) + list(critic_net.parameters()),
+            lr=train_args["lr"]
+        )
+
+        policy = PPOPolicy(
+            actor_net, critic_net, optim,
+            discount_factor=train_args["discount_factor"],
+            dist_fn=torch.distributions.categorical.Categorical,
+            deterministic_eval=True,
+            reward_normalization=False
+        )
+
+        scheduler = ExponentialLR(optim, 0.95)
+
+        policy = PPOPolicy(actor_net, critic_net, optim,
+                           discount_factor=train_args["discount_factor"],
+                           dist_fn=torch.distributions.categorical.Categorical,
+                           deterministic_eval=True,
+                           #lr_scheduler=scheduler,
+                           reward_normalization=False
+                           )
+        policy.action_type = "discrete"
+        log_path = os.path.join(f"logs/ppo_vector/{problem}")
+
+        #create folder if necessary
+        if not os.path.exists(log_path):
+            os.makedirs(log_path)
+        writer = SummaryWriter(log_path)
+        logger = TensorboardLogger(writer)
+
+        train_envs = ts.env.DummyVectorEnv(
+            [lambda: get_env(problem, running_time, problem_type) for _ in range(train_args["nr_envs"])]
+        )
+
+        collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(train_args['buffer_size'], train_args["nr_envs"]),
+                                      exploration_noise=False, preprocess_fn=preprocess_function)
+        collector.reset()
+
+        test_envs = ts.env.DummyVectorEnv(
+            [lambda: get_env(problem, running_time, problem_type) for _ in range(train_args["nr_envs"])]
+        )
+
+        test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False, preprocess_fn=preprocess_function)
+        test_collector.reset()
+
+        if load_model:
+            policy.load_state_dict(torch.load(f"ppo_graph_{problem}.pt"))
+
+
+        print("Starting training")
+        policy.train()
+        if problem == 'bpi2017':
+            trainer = ts.trainer.OnpolicyTrainer(
+                policy, collector, test_collector=test_collector,
+                max_epoch=train_args["max_epoch"],
+                step_per_epoch=train_args["step_per_epoch"],
+                #step_per_collect=train_args["step_per_collect"],
+                episode_per_collect=train_args["episode_per_collect"],
+                episode_per_test=20, batch_size=train_args["batch_size"],
+                repeat_per_collect=train_args["repeat_per_collect"],
+                logger=logger, test_in_train=True, verbose=False,
+                save_best_fn=save_best_fn)
+        else:
+            trainer = ts.trainer.OnpolicyTrainer(
+                policy, collector, test_collector=test_collector,
+                max_epoch=train_args["max_epoch"],
+                step_per_epoch=train_args["step_per_epoch"],
+                step_per_collect=train_args["step_per_collect"],
+                #episode_per_collect=train_args["episode_per_collect"],
+                episode_per_test=100, batch_size=train_args["batch_size"],
+                repeat_per_collect=train_args["repeat_per_collect"],
+                logger=logger, test_in_train=True, verbose=False,
+                save_best_fn=save_best_fn)
+
+        result = trainer.run()
+        print(f'Finished training!')

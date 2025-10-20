@@ -65,9 +65,6 @@ class BPOEnv(gym.Env):
             done (bool): whether the episode has ended, in which case further step() calls will return undefined results
             info (dict): contains auxiliary diagnostic information (helpful for debugging, and sometimes learning)
         """
-        # 1 Process action
-        # 2 Do the timestep
-        # 3 Return reward
         # Assign one resources per iteration. If possible, another is assigned in next step without advancing simulator
         assignment = self.simulator.output[action]
 
@@ -87,7 +84,7 @@ class BPOEnv(gym.Env):
             # print('stuck 1', assignment, self.simulator.now)
             self.simulator.schedule_resources([assignment])
 
-        else:  # TODO: Postpone action
+        else:
             pass
 
         # While assignment not possible and simulator not finished (postpone always possible)

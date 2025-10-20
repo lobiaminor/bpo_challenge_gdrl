@@ -291,7 +291,7 @@ class SimulationEvent:
 
 class Simulator:
     def __init__(self, running_time, report=False, problem=None, instance_file="BPI Challenge 2017 - instance.pickle",
-                 planner=None, record_total_cases=False, normalize_nodes_attrs=False, max_tasks=0, interarrival_rate_multiplier=1, record_states=False, max_transitions=0, deterministic_processing=True, allow_postpone=True):
+                 planner=None, record_total_cases=False, normalize_nodes_attrs=False, max_tasks=0, interarrival_rate_multiplier=1, record_states=False, max_transitions=0, deterministic_processing=True, allow_postpone=True, single_reward_per_trace=False):
 
         self.report = report
         self.events = []
@@ -299,6 +299,7 @@ class Simulator:
         self.multi_agent = False
         self.deterministic_processing = deterministic_processing
         self.allow_postpone = allow_postpone
+        self.single_reward_per_trace = single_reward_per_trace
 
         #flags to record problem characteristics
         self.record_total_cases = record_total_cases
@@ -1137,13 +1138,9 @@ class Simulator:
 
         self.current_reward += (self.now - self.last_event_time) * (
                 len(self.assigned_tasks) + len(self.unassigned_tasks))
-        # for agent in self.busy_resources:
-        #    self.current_rewards[agent] += (self.now - self.last_event_time) * (
-        #                len(self.assigned_tasks) + len(self.unassigned_tasks))
         self.last_event_time = self.now
 
     def last_update_rewards(self):
-
         #don't account for cases that are not assigned yet
         self.current_reward += (self.now - self.last_event_time) * (
                 len(self.assigned_tasks))

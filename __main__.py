@@ -10,22 +10,20 @@ from time import time
 from train_graph import train_args, HeteroActorNodeSelection, HeteroCriticNodeSelection
 from train_vector import train_args, VectorCriticNet, VectorActorNet
 
-# possible values: ppo, spt, fifo, bayes, random
-problem_name = "microsoft" #possible values bpi2012, bpi2017, bpi2018, consulta, production
+
+problem_name = ("microsoft") #possible values bpi2012, bpi2017, consulta, production, microsoft
 problem_type = 'regenerated'  # possible values original, regenerated
 
-multiple_models = ['ppo', 'ppo_vector']#['random', 'fifo_process', 'spt', 'ppo', 'ppo_vector']
-num_replicates = 10
+# possible values: ppo, spt, fifo, bayes, random
+multiple_models = ['ppo_vector']#['random', 'fifo_process', 'spt', 'ppo_vector', 'ppo']
+num_replicates = 100
 running_time = 7 * 24
 
-if problem_name == 'toloka':
-    instance_file = "./data/toloka_problem.pkl"
-    n_edges = 132
-elif problem_name == 'fines':
-    instance_file = "./data/fines_problem.pkl"
-    n_edges = 53
-elif problem_name == 'bpi2017':
+
+if problem_name == 'bpi2017':
     n_edges = 573
+    n_activities = 7
+    n_resources = 145
     if problem_type == 'original':
         instance_file = "./BPI Challenge 2017 - instance.pickle"
     else:
@@ -33,15 +31,18 @@ elif problem_name == 'bpi2017':
 elif problem_name == 'bpi2012':
     instance_file = "./data/bpi2012_problem.pkl"
     n_edges = 199
-elif problem_name == 'bpi2018':
-    instance_file = "./data/bpi2018_problem.pkl"
-    n_edges = 479
+    n_activities = 6
+    n_resources = 52
 elif problem_name == 'consulta':
     instance_file = "./data/consulta.pkl"
     n_edges = 435
+    n_activities = 16
+    n_resources = 179
 elif problem_name == 'production':
     instance_file = "data/production.pkl"
     n_edges = 76
+    n_activities = 13
+    n_resources = 33
 elif problem_name == 'microsoft':
     instance_file = "data/microsoft.pkl"
     n_edges = 55
@@ -133,7 +134,7 @@ def simulate_competition():
         for j in range(num_replicates):
             print(j)
             simulator = Simulator(running_time=running_time, planner=my_planner,
-                                  instance_file=instance_file)
+                                  instance_file=instance_file, deterministic_processing=False)
 
             if type(my_planner) == PPOPlanner or type(my_planner) == ShortestProcessingTime or type(my_planner) == ShortestProcessingTimeStandardized:
                 my_planner.linkSimulator(simulator)
