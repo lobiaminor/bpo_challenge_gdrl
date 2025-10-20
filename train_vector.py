@@ -18,6 +18,7 @@ from bpo_env_graph import BPOEnv
 problems = ['bpi2012', 'bpi2017', 'consulta', 'production', 'microsoft']
 problem_type = 'regenerated'  # 'original' for the original problem, 'regenerated' for the regenerated problem (only for bpi2017)
 running_time = 7 * 24
+allow_postpone = True
 num_cpu = 1
 load_model = False
 model_name = "complete"
@@ -162,7 +163,7 @@ def add_self_loops_to_assignment_nodes(data):
     return data
 
 
-def batch_to_vectors(batch, allow_postpone=True):
+def batch_to_vectors(batch, allow_postpone=False):
     processed = []
     masks = []
 
@@ -194,12 +195,11 @@ def batch_to_vectors(batch, allow_postpone=True):
         ])
         processed.append(features)
 
-        temp_mask = el['mask']
-        if allow_postpone:
-            temp_mask = torch.cat([temp_mask, torch.tensor([True], dtype=torch.bool)])
-
         # Create mask for valid actions
-        masks.append(temp_mask)
+        new_mask = el['mask']
+        if allow_postpone:
+            new_mask = torch.cat([new_mask, torch.tensor([1], dtype=torch.float)])
+        masks.append(new_mask.bool())
 
     # Create Tianshou batch
     return ts.data.Batch(
@@ -209,9 +209,10 @@ def batch_to_vectors(batch, allow_postpone=True):
 
 
 class VectorObservationNet(nn.Module):
-    def __init__(self, num_resources, num_activities):
+    def __init__(self, num_resources, num_activities, allow_postpone=False):
         super().__init__()
         self.input_dim = num_resources + num_resources + num_activities
+        self.allow_postpone = allow_postpone
         self.network = nn.Sequential(
             nn.Linear(self.input_dim, 128),
             nn.ReLU(),
@@ -221,15 +222,15 @@ class VectorObservationNet(nn.Module):
 
     def forward(self, x):
         if isinstance(x, ts.data.Batch):
-            x = batch_to_vectors(x)
+            x = batch_to_vectors(x, self.allow_postpone)
         elif isinstance(x, dict) or isinstance(x, list):
-            x = batch_to_vectors(x)
+            x = batch_to_vectors(x, self.allow_postpone)
         return self.network(x.obs), x.mask
 
 class VectorActorNet(nn.Module):
-    def __init__(self, num_resources, num_activities, num_edges, allow_postpone=True):
+    def __init__(self, num_resources, num_activities, num_edges, allow_postpone=False):
         super().__init__()
-        self.base = VectorObservationNet(num_resources, num_activities)
+        self.base = VectorObservationNet(num_resources, num_activities, allow_postpone)
         self.num_edges = num_edges #+ 1  # +1 for no-op action
         if allow_postpone:
             self.num_edges += 1
@@ -246,9 +247,9 @@ class VectorActorNet(nn.Module):
         return probs, state
 
 class VectorCriticNet(nn.Module):
-    def __init__(self, num_resources, num_activities):
+    def __init__(self, num_resources, num_activities, allow_postpone=False):
         super().__init__()
-        self.base = VectorObservationNet(num_resources, num_activities)
+        self.base = VectorObservationNet(num_resources, num_activities, allow_postpone)
         self.value_head = nn.Linear(64, 1)
 
     def forward(self, x, state=None, info={}):
@@ -261,6 +262,8 @@ class VectorCriticNet(nn.Module):
 if __name__ == '__main__':
     # if true, load model for a new round of training
     for problem in problems:
+
+
         if problem == 'bpi2017':
             n_edges = 573
             n_activities = 7
@@ -291,8 +294,8 @@ if __name__ == '__main__':
         os.makedirs(log_dir, exist_ok=True)
 
         # Initialize networks and policy
-        actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges) #+ 1)
-        critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities)
+        actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges, allow_postpone=allow_postpone) #+ 1)
+        critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities, allow_postpone=allow_postpone)
 
         optim = torch.optim.Adam(
             list(actor_net.parameters()) + list(critic_net.parameters()),
@@ -317,7 +320,7 @@ if __name__ == '__main__':
                            reward_normalization=False
                            )
         policy.action_type = "discrete"
-        log_path = os.path.join(f"logs/ppo_vector/{problem}")
+        log_path = os.path.join(f"models/ppo_vector/{problem}")
 
         #create folder if necessary
         if not os.path.exists(log_path):
@@ -341,12 +344,12 @@ if __name__ == '__main__':
         test_collector.reset()
 
         if load_model:
-            policy.load_state_dict(torch.load(f"ppo_graph_{problem}.pt"))
+            policy.load_state_dict(torch.load(f"ppo_vector_{problem}.pt"))
 
 
         print("Starting training")
         policy.train()
-        if problem == 'bpi2017':
+        if False:#problem == 'bpi2017':
             trainer = ts.trainer.OnpolicyTrainer(
                 policy, collector, test_collector=test_collector,
                 max_epoch=train_args["max_epoch"],
@@ -368,6 +371,5 @@ if __name__ == '__main__':
                 repeat_per_collect=train_args["repeat_per_collect"],
                 logger=logger, test_in_train=True, verbose=False,
                 save_best_fn=save_best_fn)
-
         result = trainer.run()
         print(f'Finished training!')

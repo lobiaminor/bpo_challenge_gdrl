@@ -11,7 +11,7 @@ from train_graph import train_args, HeteroActorNodeSelection, HeteroCriticNodeSe
 from train_vector import train_args, VectorCriticNet, VectorActorNet
 
 
-problem_name = ("microsoft") #possible values bpi2012, bpi2017, consulta, production, microsoft
+problem_name = "microsoft" #possible values bpi2012, bpi2017, consulta, production, microsoft
 problem_type = 'regenerated'  # possible values original, regenerated
 
 # possible values: ppo, spt, fifo, bayes, random
@@ -99,8 +99,8 @@ def simulate_competition():
                                     preprocess_fn=preprocess_function,
                                     actor_network_name=f"ppo_graph_{problem_name}")
         elif model_name == 'ppo_vector':
-            actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges)
-            critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities)
+            actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges, allow_postpone=True)
+            critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities, allow_postpone=True)
             optim = torch.optim.Adam(list(actor_net.parameters()) + list(critic_net.parameters()), lr=1e-4)
 
             policy = PPOPolicy(actor_net, critic_net, optim,

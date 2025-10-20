@@ -180,7 +180,6 @@ class MinedProblem(Problem):
         self.resource_pools = dict()
         self.processing_time_distribution = dict()
 
-
     def sample_initial_task_type(self):
         rd = random.random()
         rs = 0
@@ -291,7 +290,9 @@ class SimulationEvent:
 
 class Simulator:
     def __init__(self, running_time, report=False, problem=None, instance_file="BPI Challenge 2017 - instance.pickle",
-                 planner=None, record_total_cases=False, normalize_nodes_attrs=False, max_tasks=0, interarrival_rate_multiplier=1, record_states=False, max_transitions=0, deterministic_processing=True, allow_postpone=True, single_reward_per_trace=False):
+                 planner=None, record_total_cases=False, normalize_nodes_attrs=False, max_tasks=0,
+                 interarrival_rate_multiplier=1, record_states=False, max_transitions=0, deterministic_processing=True,
+                 allow_postpone=True):
 
         self.report = report
         self.events = []
@@ -299,14 +300,14 @@ class Simulator:
         self.multi_agent = False
         self.deterministic_processing = deterministic_processing
         self.allow_postpone = allow_postpone
-        self.single_reward_per_trace = single_reward_per_trace
+        self.postponed = False  # used to control if a postpone action was taken
 
-        #flags to record problem characteristics
+        # flags to record problem characteristics
         self.record_total_cases = record_total_cases
         self.record_states = record_states
         self.total_cases_dict = {'time': [], 'total_cases': []}
 
-        #self.instance_file is instance_file without extention
+        # self.instance_file is instance_file without extention
         self.instance_file = instance_file.split('/')[-1].split('.')[0]
 
         self.unassigned_tasks = dict()
@@ -437,7 +438,7 @@ class Simulator:
         # the average completion time for each resource-task pair is in self.problem.processing_time_distribution
         for idx, resource_task_type in enumerate(self.output):  # for now, postpone is not considered
             self.edge_features[idx] = \
-            self.problem.processing_time_distribution[resource_task_type[1], resource_task_type[0]][0]
+                self.problem.processing_time_distribution[resource_task_type[1], resource_task_type[0]][0]
 
         # used for getting graph state representation efficiently
         # Pre-calculate resource and task type indices
@@ -451,7 +452,7 @@ class Simulator:
         # make sure the order is always the same
         self.output.sort()
 
-        #if postpone is allowed, add it to the output
+        # if postpone is allowed, add it to the output
         if self.allow_postpone:
             self.output = self.output + ['Postpone']
         self.init_simulation()
@@ -468,10 +469,8 @@ class Simulator:
                 (self.resources[resource_index], self.task_types[task_type_index]))])
             self.assignment_nodes.append(assignment_node)
 
-
         if normalize_nodes_attrs:
             self.assignment_nodes_attr = self.normalize_features(torch.tensor(self.assignment_nodes_attr)).numpy()
-
 
     def rescale_features(self, x):
         return (x - x.min()) / (x.max() - x.min())
@@ -526,6 +525,8 @@ class Simulator:
         self.total_reward += self.current_reward
         self.current_reward = 0
 
+        # self.postponed = False  # reset postponed flag
+
         # repeat until the end of the simulation time:
         while self.now <= self.running_time:
             if self.now / self.temp > 24:
@@ -537,6 +538,7 @@ class Simulator:
             self.previous_time = self.now
             self.now = event[0]
 
+            # self.postponed = False  # reset postponed flag
             self.update_rewards()
             event = event[1]
             # print(f"Event {event.event_type} at time: {self.now} leading to reward: {self.current_reward}")
@@ -544,7 +546,7 @@ class Simulator:
             if self.record_total_cases:
                 self.total_cases_dict['time'].append(self.now)
                 self.total_cases_dict['total_cases'].append(len(self.assigned_tasks) + len(self.unassigned_tasks))
-
+            # print(f"Event type: {event.event_type}")
             # if e is an arrival event:
             if event.event_type == EventType.CASE_ARRIVAL:
 
@@ -564,6 +566,7 @@ class Simulator:
                 (t, task) = self.generate_case()
                 self.events.append((t, SimulationEvent(EventType.CASE_ARRIVAL, t, task)))
                 # self.events.sort()
+                self.postponed = False
 
 
             # if e is a start event:
@@ -573,7 +576,8 @@ class Simulator:
                 if self.debug_report:
                     print(f"Task {event.task} assigned to resource {event.resource} at time {self.now}")
                 # create a complete event for task
-                t = self.now + self.problem.processing_time_sample(event.resource, event.task, self.deterministic_processing)
+                t = self.now + self.problem.processing_time_sample(event.resource, event.task,
+                                                                   self.deterministic_processing)
                 self.events.append((t, SimulationEvent(EventType.COMPLETE_TASK, t, event.task, event.resource)))
                 # self.events.sort()
                 # set resource to busy
@@ -624,7 +628,7 @@ class Simulator:
                                                               nr_tasks=len(self.unassigned_tasks),
                                                               nr_resources=len(self.available_resources))))
                 # self.events.sort()
-
+                self.postponed = False
                 self.task_arrival_times.pop(event.task.id)
                 self.task_start_times.pop(event.task.id)
 
@@ -677,59 +681,101 @@ class Simulator:
                             self.problem.resource_weights[self.problem.resources.index(r)])
                 # plan the next resource schedule event
                 self.events.append((self.now + 1, SimulationEvent(EventType.SCHEDULE_RESOURCES, self.now + 1, None)))
-
+                self.postponed = False
             # if e is a planning event: do assignment
             elif event.event_type == EventType.PLAN_TASKS:
 
                 if self.planner == None:  # in training mode, we do not provide a planner
                     # there only is an assignment if there are free resources and tasks
-                    #tt = set(t.task_type for t in list(self.unassigned_tasks.values()))
-                    if sum(self.get_mask()[0]) > 0:
-                        if sum(self.get_mask()[0]) > 1:
+
+                    if not self.allow_postpone:
+                        curr_mask = sum(self.get_mask()[0])
+                        if curr_mask > 0:
+
+                            if curr_mask > 1:
+                                if self.record_states:
+                                    self.record_state_to_json(list(self.available_resources),
+                                                              list(self.unassigned_tasks.values()),
+                                                              self.problem_resource_pool)
+
+                                # call the agent (a decision is needed)
+                                self.plan = True
+                                break  # break for loop
+                            else:
+                                # only one resource available, no need to call the agent
+                                action = np.where(self.get_mask()[0] == 1)[0][0]
+                                self.schedule_resources([self.output[action]])
+
+                    # allow postpone
+                    else:
+                        if sum(self.get_mask()[0]) > 0:
                             if self.record_states:
                                 self.record_state_to_json(list(self.available_resources),
-                                                            list(self.unassigned_tasks.values()),
-                                                            self.problem_resource_pool)
-
-
-                            #call the agent (a decision is needed)
+                                                          list(self.unassigned_tasks.values()),
+                                                          self.problem_resource_pool)
+                            # call the agent (a decision is needed)
                             self.plan = True
-                            break  # break for loop
+                            break
                         else:
-                            # only one resource available, no need to call the agent
-                            action = np.where(self.get_mask()[0] == 1)[0][0]
-                            self.schedule_resources([self.output[action]])
-                    if self.plan:
-                        self.plan = False
-                        break  # return to gym environment
+                            # print("All resources are busy or no tasks to assign")
+                            pass
+                        if self.plan:
+                            self.plan = False
+                            break
+
                 else:  # at inference time, we call the plan function of the planner
 
-                    new_sample = False
-                    while sum(self.get_mask()[0]) > 0:
+                    if not self.allow_postpone:
+                        new_sample = False
+                        while sum(self.get_mask()[0]) > 0:
 
-                        if sum(self.get_mask()[0]) > 1:
+                            if sum(self.get_mask()[0]) > 1:
+                                if self.record_states:
+                                    self.record_state_to_json(list(self.available_resources),
+                                                              list(self.unassigned_tasks.values()),
+                                                              self.problem_resource_pool)
+
+                                assignments = self.planner.plan(list(self.available_resources),
+                                                                list(self.unassigned_tasks.values()),
+                                                                self.problem_resource_pool)
+                                # print(assignments)
+                                self.schedule_resources(assignments)
+                                new_sample = True
+
+                            else:
+                                # only one resource available, no need to call the agent
+                                action = np.where(self.get_mask()[0] == 1)[0][0]
+                                self.schedule_resources([self.output[action]])
+
+                        if new_sample:
+                            self.transitions_num += 1
+                        if 0 < self.max_transitions <= self.transitions_num:
+                            self.status = "FINISHED"
+                            break
+
+                    # allow postpone
+                    else:
+                        while sum(self.get_mask()[0]) > 0 and not self.postponed:
                             if self.record_states:
                                 self.record_state_to_json(list(self.available_resources),
-                                                            list(self.unassigned_tasks.values()),
-                                                            self.problem_resource_pool)
+                                                          list(self.unassigned_tasks.values()),
+                                                          self.problem_resource_pool)
 
                             assignments = self.planner.plan(list(self.available_resources),
                                                             list(self.unassigned_tasks.values()),
                                                             self.problem_resource_pool)
                             # print(assignments)
-                            self.schedule_resources(assignments)
-                            new_sample = True
+                            assigned_resource = self.schedule_resources(assignments)
 
-                        else:
-                            # only one resource available, no need to call the agent
-                            action = np.where(self.get_mask()[0] == 1)[0][0]
-                            self.schedule_resources([self.output[action]])
+                            if assigned_resource == "Postpone":
+                                self.postponed = True
+                                break
+                        # not true when postpone is allowed! the agent should always be called
+                        # else:
+                        # only one resource available, no need to call the agent
+                        #    action = np.where(self.get_mask()[0] == 1)[0][0]
+                        #    self.schedule_resources([self.output[action]])
 
-                    if new_sample:
-                        self.transitions_num += 1
-                    if 0 < self.max_transitions <= self.transitions_num:
-                        self.status = "FINISHED"
-                        break
 
             # if e is a complete case event: add to the number of completed cases
             elif event.event_type == EventType.COMPLETE_CASE:
@@ -739,18 +785,19 @@ class Simulator:
                 self.finalized_cases.append(event.task.case_id)
 
         # FIX MAX TAKS NUMBER
-        if (self.max_transitions != 0 and self.transitions_num >= self.max_transitions) or (self.max_tasks != 0 and self.total_completed_tasks >= self.max_tasks):
+        if (self.max_transitions != 0 and self.transitions_num >= self.max_transitions) or (
+                self.max_tasks != 0 and self.total_completed_tasks >= self.max_tasks):
             self.status = "FINISHED"
         elif self.now > self.running_time:
             self.status = "FINISHED"
 
         if self.status == "FINISHED":
-            #self.update_rewards()
+            # self.update_rewards()
             self.total_reward += self.current_reward
 
             unfinished_cases = 0
             original_cycle_time = self.total_cycle_time
-            #print(f'Total cycle time multiplied by self.now: {self.total_cycle_time*self.now}, total reward: {self.total_reward}')
+            # print(f'Total cycle time multiplied by self.now: {self.total_cycle_time*self.now}, total reward: {self.total_reward}')
 
             for busy_case_id in self.busy_cases.keys():
                 if busy_case_id not in self.finalized_cases:
@@ -764,8 +811,8 @@ class Simulator:
 
             self.residual_cycle_time = self.total_cycle_time - original_cycle_time
 
-            #plotting is done externally
-            #if self.record_total_cases:
+            # plotting is done externally
+            # if self.record_total_cases:
             #    self.plot_cases()
 
             # self.current_reward += self.reward_penalty * unfinished_cases
@@ -787,46 +834,55 @@ class Simulator:
                 return 0
 
     def schedule_resources(self, assignments):
+        assignments_list = []
 
-        assignments_list = [
-            (resource, next((x for x in list(self.unassigned_tasks.values()) if x.task_type == task), None)) for
-            (resource, task) in assignments]
+        for assignment in assignments:
+            if assignment == 'Postpone':
+                # print(f"Postpone action received at time{self.now}.")
+                self.postponed = True
+                # Skip this assignment as it's a postpone action
+                return "Postpone"
 
-        # for each newly assigned task:
+            resource, task_type = assignment
+            task = next((x for x in list(self.unassigned_tasks.values()) if x.task_type == task_type), None)
+            if task:
+                assignments_list.append((resource, task))
+                # print(f"Assigning task {task.id} of type {task_type} to resource {resource} at time {self.now}.")
+            else:
+                print(f"ERROR: No unassigned task of type {task_type} available for resource {resource}.")
+                return None, "ERROR: trying to assign a task type that is not in unassigned_tasks."
+
         moment = self.now
         self.last_assignment_duration = moment - self.last_assignment_time
         self.last_assignment_time = moment
 
-        # for each newly assigned task:
-        moment = self.now
         for el in assignments_list:
             task = el[1]
             resource = el[0]
 
-            # print('EL:', el)
             if task.id not in [t.id for t in self.unassigned_tasks.values()]:
                 return None, "ERROR: trying to assign a task that is not in the unassigned_tasks."
             if resource not in self.available_resources:
                 return None, "ERROR: trying to assign a resource that is not in available_resources."
             if resource not in self.problem_resource_pool[task.task_type]:
                 return None, "ERROR: trying to assign a resource to a task that is not in its resource pool."
+
             # create start event for task
             self.events.append((moment, SimulationEvent(EventType.START_TASK, moment, task, resource)))
             # assign task
             del self.unassigned_tasks[task.id]
-            self.unassigned_tasks_per_type[task.task_type].remove(task.id)
             self.assigned_tasks[task.id] = (task, resource, moment)
             # reserve resource
             self.available_resources.remove(resource)
             self.reserved_resources[resource] = (task, moment)
-        # self.events.sort()
 
-        # Return assigned task id to get add waiting time to the cumulative reward when the action is taken
         if self.multi_agent:
             return assignments_list[0][0].id
         else:
-
+            # try:
             return assignments_list[0]
+            # except IndexError:
+            #    return None
 
     def get_state(self, agent=None,
                   multi_agent=False):  # TODO: make this applicable both to single and multi agent setting (agent should not be set to true by default)
@@ -893,54 +949,52 @@ class Simulator:
         return obs
 
     # used to extract a bipartite graph state representation
-    def get_graph_state_bipartite(self):
-        # Create the graph
-        graph = {}
+    # def get_graph_state_bipartite(self):
+    #    # Create the graph
+    #    graph = {}
 
-        # Add node types
-        graph['edge_index'] = np.array([[], []], dtype=np.int64)
-        graph['edge_attr'] = np.array([], dtype=np.float32)
-        graph['x'] = np.array([], dtype=np.float32)
-        graph['y'] = np.array([], dtype=np.float32)
-        graph['global_attr'] = np.array([len(self.resources)], dtype=np.float32)
+    #    # Add node types
+    #    graph['edge_index'] = np.array([[], []], dtype=np.int64)
+    #    graph['edge_attr'] = np.array([], dtype=np.float32)
+    #    graph['x'] = np.array([], dtype=np.float32)
+    #    graph['y'] = np.array([], dtype=np.float32)
+    #    graph['global_attr'] = np.array([len(self.resources)], dtype=np.float32)
 
-        # Add resource nodes
-        resources_available = np.isin(self.resources, list(self.available_resources)).astype(int)
-        resources_busy_time = np.zeros(len(self.resources))  # placeholder
-        resources_x = np.column_stack([resources_available, resources_busy_time])
-        graph['resources'] = resources_x
+    #    # Add resource nodes
+    #    resources_available = np.isin(self.resources, list(self.available_resources)).astype(int)
+    #    resources_busy_time = np.zeros(len(self.resources))  # placeholder
+    #    resources_x = np.column_stack([resources_available, resources_busy_time])
+    #    graph['resources'] = resources_x
 
-        # Calculate unassigned_task_types_num once for each task type
-        unassigned_tasks_values = np.array([task.task_type for task in self.unassigned_tasks.values()])
-        unassigned_task_types_num = {task_type: np.sum(unassigned_tasks_values == task_type) for task_type in
-                                     self.task_types_set}
+    #    # Calculate unassigned_task_types_num once for each task type
+    #    unassigned_tasks_values = np.array([task.task_type for task in self.unassigned_tasks.values()])
+    #    unassigned_task_types_num = {task_type: np.sum(unassigned_tasks_values == task_type) for task_type in
+    #                                 self.task_types_set}
 
-        # Add task type nodes
-        task_types_num = np.array([unassigned_task_types_num.get(task_type, 0) for task_type in self.task_types])
-        if task_types_num.sum() != 0:
-            task_types_num = task_types_num / task_types_num.sum()
-        graph['task_types'] = task_types_num
+    #    # Add task type nodes
+    #    task_types_num = np.array([unassigned_task_types_num.get(task_type, 0) for task_type in self.task_types])
+    #    if task_types_num.sum() != 0:
+    #        task_types_num = task_types_num / task_types_num.sum()
+    #    graph['task_types'] = task_types_num
 
-        # Add edges
-        available_resources_set = set(self.available_resources)
+    #    # Add edges
+    #    available_resources_set = set(self.available_resources)
 
-        edge_index = [[self.resource_indices[resource], self.task_type_indices[task_type]]
-                      for resource in self.resources for task_type in self.task_types
-                      if resource in self.problem.resource_pools[task_type]]
+    #    edge_index = [[self.resource_indices[resource], self.task_type_indices[task_type]]
+    #                  for resource in self.resources for task_type in self.task_types
+    #                  if resource in self.problem.resource_pools[task_type]]
 
-        # import pdb; pdb.set_trace()
+    #    edge_attr = np.array(
+    #        [0 if resource not in available_resources_set or unassigned_task_types_num[task_type] == 0 else 1
+    #         for resource in self.resources for task_type in self.task_types
+    #         if resource in self.problem.resource_pools[task_type]], dtype=np.float32)
 
-        edge_attr = np.array(
-            [0 if resource not in available_resources_set or unassigned_task_types_num[task_type] == 0 else 1
-             for resource in self.resources for task_type in self.task_types
-             if resource in self.problem.resource_pools[task_type]], dtype=np.float32)
+    #    edge_attr = np.stack([edge_attr, self.edge_features], axis=1)
 
-        edge_attr = np.stack([edge_attr, self.edge_features], axis=1)
+    #    graph['edge_index'] = np.array(edge_index, dtype=np.int64).T
+    #    graph['edge_attr'] = edge_attr  # np.array(edge_attr, dtype=np.float32)
 
-        graph['edge_index'] = np.array(edge_index, dtype=np.int64).T
-        graph['edge_attr'] = edge_attr  # np.array(edge_attr, dtype=np.float32)
-
-        return {'graph_dict': graph}
+    #    return {'graph_dict': graph}
 
     # used to extract a graph state representation where the resources are assigned to the task types
     # by means of an intermediate 'assignment' node that carries the information regarding the average duration of the assignment
@@ -948,11 +1002,6 @@ class Simulator:
         # Create the graph
         graph = {}
 
-        # Add node types
-        # graph['edge_index'] = np.array([[], []], dtype=np.int64)
-        # graph['edge_attr'] = np.array([], dtype=np.float32)
-        # graph['x'] = np.array([], dtype=np.float32)
-        # graph['y'] = np.array([], dtype=np.float32)
         graph['global_attr'] = np.array([len(self.resources)], dtype=np.float32)
 
         # Add resource nodes
@@ -965,10 +1014,6 @@ class Simulator:
 
         graph['assignments'] = np.expand_dims(np.array(self.assignment_nodes_attr, dtype=np.float32), axis=1)
 
-        # graph[str(('resources', 'edge', 'assignments'))] = np.array(resource_to_assignment_edges, dtype=np.int64)
-
-        # graph[str(('task_types', 'edge', 'assignments'))] = np.array(task_type_to_assignment_edges, dtype=np.int64)
-
         graph['mask'] = mask
 
         graph['reconstruct_edges'] = np.array(self.edge_index)
@@ -976,7 +1021,10 @@ class Simulator:
         return {'graph_dict': graph}
 
     def get_mask(self):
-        i_output = self.output[0:-1]
+        if self.allow_postpone:
+            i_output = self.output[0:-1]  # exclude postpone if present
+        else:
+            i_output = self.output
 
         # Step 1: Calculate unassigned_task_types_num using np.unique
         unassigned_tasks_values = np.array([task.task_type for task in self.unassigned_tasks.values()])
@@ -1129,7 +1177,7 @@ class Simulator:
         plt.title('Number of cases in the system over time')
         plt.show()
 
-        #Save the numbers to a txt file
+        # Save the numbers to a txt file
         with open('total_cases.txt', 'w') as f:
             for i in range(len(self.total_cases_dict['time'])):
                 f.write(f"{self.total_cases_dict['time'][i]} {self.total_cases_dict['total_cases'][i]}\n")
@@ -1138,12 +1186,16 @@ class Simulator:
 
         self.current_reward += (self.now - self.last_event_time) * (
                 len(self.assigned_tasks) + len(self.unassigned_tasks))
+        # for agent in self.busy_resources:
+        #    self.current_rewards[agent] += (self.now - self.last_event_time) * (
+        #                len(self.assigned_tasks) + len(self.unassigned_tasks))
         self.last_event_time = self.now
 
     def last_update_rewards(self):
-        #don't account for cases that are not assigned yet
+
+        # don't account for cases that are not assigned yet
         self.current_reward += (self.now - self.last_event_time) * (
-                len(self.assigned_tasks))
+            len(self.assigned_tasks))
         self.last_event_time = self.now
 
     def reset_reward(self, agent):
@@ -1152,16 +1204,16 @@ class Simulator:
     def reset_simulator(self):
         self.__init__(self.running_time, self.report, problem=self.problem, planner=None,
                       max_tasks=0)
-        #print(self.available_resources)
-        #print(self.unassigned_tasks)
+        # print(self.available_resources)
+        # print(self.unassigned_tasks)
         # self.init_simulation
 
     def available_assignments(self):
         # Check if there are any available assignments
         for task in self.unassigned_tasks.values():
-            # import pdb; pdb.set_trace()
             if len(set(self.available_resources).intersection(set(self.problem_resource_pool[task.task_type]))) > 0:
                 return True
+
         return False
 
     def record_state_to_json(self, available_resources, unassigned_tasks, problem_resource_pool):
@@ -1174,5 +1226,5 @@ class Simulator:
         file_name = self.instance_file.split('/')[-1].split('.')[0]
         with open(f'states_{file_name}.json', 'a') as f:
             json.dump(state, f)
-            #delimiter
+            # delimiter
             f.write('\n')

@@ -48,6 +48,9 @@ class BPOEnv(gym.Env):
 
         # used to reduce the calls to get_graph_state
         #self.current_state = self.simulator.get_graph_state()['graph_dict']
+        self.last_act = None
+        self.last_time = None
+
 
     def step(self, action):
         """Run one timestep of the environment's dynamics. When end of
@@ -65,30 +68,43 @@ class BPOEnv(gym.Env):
             done (bool): whether the episode has ended, in which case further step() calls will return undefined results
             info (dict): contains auxiliary diagnostic information (helpful for debugging, and sometimes learning)
         """
+        # 1 Process action
+        # 2 Do the timestep
+        # 3 Return reward
         # Assign one resources per iteration. If possible, another is assigned in next step without advancing simulator
         assignment = self.simulator.output[action]
+        #print("Action at time", self.simulator.now, ":", assignment)
+
+        # if the same action is repeated break
+        if (self.last_act == assignment and self.last_time == self.simulator.now
+                and assignment != 'Postpone'):
+            print('stuck 2', assignment, self.simulator.now)
+            #return self.current_state, -1000, True, False, {}
+        self.last_act = assignment
+        self.last_time = self.simulator.now
 
         if assignment == 'Postpone':
+            self.simulator.postponed = True
             self.nr_postpone += 1
-            print("Postponing at time", self.simulator.now, "Total postpones:", self.nr_postpone)
+            #print("Postponing at time", self.simulator.now, "Total postpones:", self.nr_postpone)
         self.counter += 1
         if self.counter % 1000 == 0:
             print('Postponed:', f'{self.nr_postpone}/1000')
-            if len(self.simulator.unassigned_tasks) > 0:
-                print(
-                    [sum([1 if task.task_type == el else 0 for task in self.simulator.unassigned_tasks.values()]) for el
-                     in self.simulator.task_types], '\n')
+            #if len(self.simulator.unassigned_tasks) > 0:
+            #    print(
+            #        [sum([1 if task.task_type == el else 0 for task in self.simulator.unassigned_tasks.values()]) for el
+            #         in self.simulator.task_types], '\n')
             self.nr_postpone = 0
 
-        if assignment != 'Postpone':
+        #if assignment != 'Postpone':
             # print('stuck 1', assignment, self.simulator.now)
-            self.simulator.schedule_resources([assignment])
+        self.simulator.schedule_resources([assignment])
 
-        else:
-            pass
+        #else:
+        #    pass
 
         # While assignment not possible and simulator not finished (postpone always possible)
-        while (not self.simulator.available_assignments()) and (self.simulator.status != 'FINISHED'):
+        while ((not self.simulator.available_assignments()) and (self.simulator.status != 'FINISHED')) or (self.simulator.postponed and (self.simulator.status != 'FINISHED')):
             # print('ASSIGNED', self.simulator.now)
             self.simulator.run()  # breaks each time at resource assignment, continues if no assignment possible
 
@@ -108,8 +124,6 @@ class BPOEnv(gym.Env):
                 {}
             )
         else:
-
-
             self.current_state = self.simulator.get_graph_state()['graph_dict']
             return (
                 self.current_state,
