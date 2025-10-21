@@ -1,12 +1,11 @@
 import json
 from enum import Enum, auto
 from datetime import datetime, timedelta
-import numpy as np
 import random
 import pickle as pickle
 from abc import ABC, abstractmethod
 import numpy as np
-# from types import NoneType
+
 
 from time import time
 
@@ -292,7 +291,7 @@ class Simulator:
     def __init__(self, running_time, report=False, problem=None, instance_file="BPI Challenge 2017 - instance.pickle",
                  planner=None, record_total_cases=False, normalize_nodes_attrs=False, max_tasks=0,
                  interarrival_rate_multiplier=1, record_states=False, max_transitions=0, deterministic_processing=True,
-                 allow_postpone=True):
+                 allow_postpone=True, reward_from_literature=False):
 
         self.report = report
         self.events = []
@@ -301,6 +300,7 @@ class Simulator:
         self.deterministic_processing = deterministic_processing
         self.allow_postpone = allow_postpone
         self.postponed = False  # used to control if a postpone action was taken
+        self.reward_from_literature = reward_from_literature
 
         # flags to record problem characteristics
         self.record_total_cases = record_total_cases
@@ -538,8 +538,8 @@ class Simulator:
             self.previous_time = self.now
             self.now = event[0]
 
-            # self.postponed = False  # reset postponed flag
-            self.update_rewards()
+            if not self.reward_from_literature: #if the reward from literature is used, it is only produced at the end of a trace
+                self.update_rewards()
             event = event[1]
             # print(f"Event {event.event_type} at time: {self.now} leading to reward: {self.current_reward}")
 
@@ -810,6 +810,9 @@ class Simulator:
                         unfinished_cases += 1
 
             self.residual_cycle_time = self.total_cycle_time - original_cycle_time
+
+            if self.reward_from_literature:
+                self.current_reward = - 1/(1+self.total_cycle_time/10000)
 
             # plotting is done externally
             # if self.record_total_cases:
@@ -1189,13 +1192,6 @@ class Simulator:
         # for agent in self.busy_resources:
         #    self.current_rewards[agent] += (self.now - self.last_event_time) * (
         #                len(self.assigned_tasks) + len(self.unassigned_tasks))
-        self.last_event_time = self.now
-
-    def last_update_rewards(self):
-
-        # don't account for cases that are not assigned yet
-        self.current_reward += (self.now - self.last_event_time) * (
-            len(self.assigned_tasks))
         self.last_event_time = self.now
 
     def reset_reward(self, agent):

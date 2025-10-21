@@ -16,7 +16,7 @@ from torch.optim.lr_scheduler import ExponentialLR, LinearLR
 from bpo_env_graph import BPOEnv
 
 # possible problems are: fines, bpi2017, bpi2018
-problems = ['consulta']
+problems = ['bpi2012']
 problem_type = 'regenerated'  # 'original' for the original problem, 'regenerated' for the regenerated problem (only for bpi2017)
 running_time = 7 * 24
 num_cpu = 1

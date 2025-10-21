@@ -6,10 +6,8 @@ import tianshou as ts
 
 from torch import nn, softmax
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.data import HeteroData
 from tianshou.utils import TensorboardLogger
 from tianshou.policy import PPOPolicy
-from torch.optim.lr_scheduler import ExponentialLR, LinearLR
 import torch.nn.functional as F
 
 from bpo_env_graph import BPOEnv
@@ -19,6 +17,7 @@ problems = ['bpi2012', 'bpi2017', 'consulta', 'production', 'microsoft']
 problem_type = 'regenerated'  # 'original' for the original problem, 'regenerated' for the regenerated problem (only for bpi2017)
 running_time = 7 * 24
 allow_postpone = True
+reward_from_literature = True
 num_cpu = 1
 load_model = False
 model_name = "complete"
@@ -101,9 +100,12 @@ def preprocess_function(normalize=True, **kwargs):
 
 def save_best_fn(policy):
     print("Saving new best policy")
-    torch.save(policy.state_dict(), f"ppo_graph_{problem}.pt")
+    if not reward_from_literature:
+        torch.save(policy.state_dict(), f"ppo_vector_{problem}.pt")
+    else:
+        torch.save(policy.state_dict(), f"ppo_vector_literature_{problem}.pt")
 
-def get_env(problem_name, duration, problem_type='original'):
+def get_env(problem_name, duration, problem_type='original', reward_from_literature=False):
     if problem_name == 'toloka':
         instance_file = "./data/toloka_problem.pkl"
     elif problem_name == 'fines':
@@ -129,7 +131,7 @@ def get_env(problem_name, duration, problem_type='original'):
         raise Exception("Invalid problem name")
 
     env = BPOEnv(instance_file=instance_file,
-                 running_time=duration, action_mode='edge_selection', interarrival_rate_multiplier=interarrival_rate_multiplier)  # wrapped_env(running_time=running_time)
+                 running_time=duration, action_mode='edge_selection', interarrival_rate_multiplier=interarrival_rate_multiplier, reward_from_literature=reward_from_literature)  # wrapped_env(running_time=running_time)
     return env
 
 def make_hetero_undirected(hetero_data):
@@ -310,17 +312,13 @@ if __name__ == '__main__':
             reward_normalization=False
         )
 
-        scheduler = ExponentialLR(optim, 0.95)
 
-        policy = PPOPolicy(actor_net, critic_net, optim,
-                           discount_factor=train_args["discount_factor"],
-                           dist_fn=torch.distributions.categorical.Categorical,
-                           deterministic_eval=True,
-                           #lr_scheduler=scheduler,
-                           reward_normalization=False
-                           )
         policy.action_type = "discrete"
-        log_path = os.path.join(f"models/ppo_vector/{problem}")
+
+        if not reward_from_literature:
+            log_path = os.path.join(f"models/ppo_vector/{problem}")
+        else:
+            log_path = os.path.join(f"models/ppo_vector_literature/{problem}")
 
         #create folder if necessary
         if not os.path.exists(log_path):
@@ -337,15 +335,16 @@ if __name__ == '__main__':
         collector.reset()
 
         test_envs = ts.env.DummyVectorEnv(
-            [lambda: get_env(problem, running_time, problem_type) for _ in range(train_args["nr_envs"])]
+            [lambda: get_env(problem, running_time, problem_type, reward_from_literature=reward_from_literature) for _ in range(train_args["nr_envs"])]
         )
 
         test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False, preprocess_fn=preprocess_function)
         test_collector.reset()
 
-        if load_model:
+        if load_model and not reward_from_literature:
             policy.load_state_dict(torch.load(f"ppo_vector_{problem}.pt"))
-
+        elif load_model and reward_from_literature:
+            policy.load_state_dict(torch.load(f"ppo_vector_literature_{problem}.pt"))
 
         print("Starting training")
         policy.train()

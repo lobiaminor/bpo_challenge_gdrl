@@ -11,11 +11,11 @@ from train_graph import train_args, HeteroActorNodeSelection, HeteroCriticNodeSe
 from train_vector import train_args, VectorCriticNet, VectorActorNet
 
 
-problem_name = "microsoft" #possible values bpi2012, bpi2017, consulta, production, microsoft
+problem_name = "bpi2012" #possible values bpi2012, bpi2017, consulta, production, microsoft
 problem_type = 'regenerated'  # possible values original, regenerated
 
 # possible values: ppo, spt, fifo, bayes, random
-multiple_models = ['ppo_vector']#['random', 'fifo_process', 'spt', 'ppo_vector', 'ppo']
+multiple_models = ['ppo']#['random', 'fifo_process', 'spt', 'ppo_vector_literature', 'ppo_vector', 'ppo']
 num_replicates = 100
 running_time = 7 * 24
 
@@ -98,7 +98,7 @@ def simulate_competition():
             my_planner = PPOPlanner(policy,
                                     preprocess_fn=preprocess_function,
                                     actor_network_name=f"ppo_graph_{problem_name}")
-        elif model_name == 'ppo_vector':
+        elif model_name == 'ppo_vector' or model_name == 'ppo_vector_literature':
             actor_net = VectorActorNet(num_resources=n_resources, num_activities=n_activities, num_edges=n_edges, allow_postpone=True)
             critic_net = VectorCriticNet(num_resources=n_resources, num_activities=n_activities, allow_postpone=True)
             optim = torch.optim.Adam(list(actor_net.parameters()) + list(critic_net.parameters()), lr=1e-4)
@@ -112,10 +112,11 @@ def simulate_competition():
                                # lr_scheduler=scheduler,
                                reward_normalization=False
                                )
+            actor_net_name = f"ppo_vector_literature_{problem_name}" if model_name == 'ppo_vector_literature' else f"ppo_vector_{problem_name}"
 
             my_planner = PPOPlanner(policy,
                                     preprocess_fn=preprocess_function,
-                                    actor_network_name=f"ppo_vector_{problem_name}")
+                                    actor_network_name=actor_net_name)
         elif model_name == 'spt':
             my_planner = ShortestProcessingTime()
         elif model_name == 'spt_std':

@@ -8,7 +8,7 @@ from simulator import Simulator, MinedProblem
 
 class BPOEnv(gym.Env):
     def __init__(self, render_mode='human', action_mode="edge_selection",
-                 instance_file="./BPI Challenge 2017 - instance.pickle", running_time=365 * 24, interarrival_rate_multiplier = 1) -> None:
+                 instance_file="./BPI Challenge 2017 - instance.pickle", running_time=365 * 24, interarrival_rate_multiplier = 1, reward_from_literature=False) -> None:
         super().__init__()
         self.num_envs = 1
         self.instance_file = instance_file
@@ -27,7 +27,7 @@ class BPOEnv(gym.Env):
         self.problem = MinedProblem.from_file(instance_file)
 
         self.simulator = Simulator(running_time=self.running_time, problem=self.problem, report=False,
-                                   instance_file=self.instance_file, planner=None, interarrival_rate_multiplier=interarrival_rate_multiplier)
+                                   instance_file=self.instance_file, planner=None, interarrival_rate_multiplier=interarrival_rate_multiplier, reward_from_literature=reward_from_literature)
 
         self.observation_space = spaces.Dict(
             {
